@@ -795,3 +795,660 @@ module.exports = posts;
 - 자바스크립트 배열을 사용하여 구현하면 서버를 재시작할 때 당연히 데이터가 소멸
 - 데이터베이스를 사용하면 다양하고 효율적인 방식으로 많은 양의 데이터를 읽고 쓸 수 있음
 - 이 책에서는 MongoDB를 사용하여 백엔드 구현할 예정
+
+# 22. mongoose를 이용한 MongoDB연동 실습
+
+## 22.1 소개하기
+
+- MongoDB 는 NoSQL 데이터베이스
+- 스키마: 데이터베이스에 어떤 형식의 데이터를 넣을지에 대한 정보를 가리킨다.
+- 예를 들어 회원 정보 스키마라면 계정명, 이메일, 이름 등이 되겠다.
+
+### 22.1.1 문서란?
+
+- 여기서 말하는 문서(document)는 RDBMS의 레코드(record)와 개념이 비슷
+- 문서의 데이터 구조는 한 개 이상의 **키-값** 쌍으로 되어 있다.
+  {
+  "\_id" : ObjectId("5099803df3f4948bd2f98391:),
+  "username": "velopert",
+  "name": {first: "M.J.", last: "Kim"}
+  }
+
+- 문서는 **BSON(바이너리 형태의 JSON)** 형태로 저장된다.
+- 새로운 문서를 만들면 \_id라는 고유한 값을 자동으로 생성한다.
+- 이 값은 시간, 머신 아이디, 프로세스 아이디, 순차 번호로 되어 있어 값의 고유함을 보장한다.
+
+- 여러 문서가 들어 있는 곳을 **컬렉션**이라고 한다.
+- MongoDB는 다른 스키마를 가지고 있는 문서들이 한 컬렉션에서 공존할 수 있다.
+
+### 22.1.2 MogoDB 구조
+
+- 서버 하나에 데이터베이스를 여러 개 가지고 있을 수 있다.
+- 각 데이터베이스에는 여러 개의 컬렉션이 있으며, 컬렉션 내부에는 문서들이 들어있다.
+
+### 22.1.3 스키마 디자인
+
+- MongoDB에서 스키마를 디자인하는 방식은 기존 RDBMS에서 스키마를 디자인하는 방식과 완전히 다르다
+- NoSQL에서는 그냥 모든 것을 문서 하나에 넣는다. (교재 p640 참고)
+
+- 이런 상황에서 보통 MongoDB는 댓글을 포스트 문서 내부에 넣는다.
+- 문서 내부에 또 다른 문서가 위차할 수 있는데, 이를 **서브다큐먼트(subdocument)**라고 한다.
+- 서브다큐먼트 또한 일반 문서를 다루는 것처럼 쿼리할 수 있다.
+
+- 문서 하나에는 최대 16MB만큼 데이터를 넣을 수 있다.
+- 100자 댓글 데이터라면 대략 0.24KB를 차지한다. 16MB는 16.384KB이니 문서 하나에 댓글 데이터를 약 6,8000개 넣을 수 있는 셈이다.
+- 서브다큐먼트에서 이 용량을 초과할 가능성이 있다면 컬렉션을 분리시키는 것이 좋다
+
+## 22.2 MongoDB 서버 준비
+
+### 22.2.1 설치
+
+- https://www.mongodb.com/try/download/community
+- Complete로 설치
+- Window는 Compass 자동으로 설치 됨
+
+### 22.2.2 MongoDB 작동 확인
+
+- C:\Program Files\MongoDB\Server\버전(7.0)\bin 터미널에서
+  mongo와 version() 명령어를 사용하면 실행과 버전을 확인할 수 있다고 하나
+  명령어 실행이 되지 않아 확인하지 못함(추후 확인해보자)
+
+## 22.3 mongoose의 설치 및 적용
+
+- mongoose는 Node.js 환경에서 사용하는 MongoDB 기반 ODM(Object Data Modelling) 라이브러리이다.
+- 이 라이브러리는 데이터베이스 문서들을 자바스크립트 객체처럼 사용할 수 있게 해준다.
+- `yarn add mongoose`
+- `yarn add dotenv`
+
+### 22.3.1 .env 환경변수 파일 생성
+
+- .env
+
+```txt
+PORT=4000
+MONGO_URI=mongodb://localhost:27017/blog
+```
+
+- src/index.js
+
+```js
+require("dotenv").config();
+const koa = require("koa");
+// koa-router를 불러온 뒤
+const Router = require("koa-router");
+const bodyParser = require("koa-bodyparser");
+
+// 구조분해 할당을 통해 process.env 내부 값에 대한 레퍼런스 만들기
+const { PORT } = process.env;
+
+const api = require("./api");
+
+const app = new koa();
+// koa-router를 사용하여 Router 인스턴스 생성
+const router = new Router();
+
+// 라우터 설정
+router.use("/api", api.routes()); // api 라우트 적용
+
+// 라우터 적용 전에 bodyParser 적용
+app.use(bodyParser());
+
+// app 인스턴스에 라우터 적용
+app.use(router.routes()).use(router.allowedMethods());
+
+// PORT가 지정되어 있지 않다면 4000을 사용
+const port = PORT || 4000;
+app.listen(port, () => {
+  console.log("Listening to port %d", port);
+});
+```
+
+### 22.3.2 mongoose로 서버와 데이터베이스 연결
+
+- mongoose를 이용하여 서버와 데이터베이스를 연결
+- mongoose의 connect 함수 사용
+- src/index.js
+
+```js
+require("dotenv").config();
+const koa = require("koa");
+// koa-router를 불러온 뒤
+const Router = require("koa-router");
+const bodyParser = require("koa-bodyparser");
+const mongoose = require("mongoose");
+
+const api = require("./api");
+
+// 구조분해 할당을 통해 process.env 내부 값에 대한 레퍼런스 만들기
+const { PORT, MONGO_URI } = process.env;
+
+mongoose
+  .connect(MONGO_URI)
+  .then(() => {
+    console.log("Connected to MongoDB");
+  })
+  .catch((error) => {
+    console.error(error);
+  });
+
+const app = new koa();
+// koa-router를 사용하여 Router 인스턴스 생성
+const router = new Router();
+
+// 라우터 설정
+router.use("/api", api.routes()); // api 라우트 적용
+
+// 라우터 적용 전에 bodyParser 적용
+app.use(bodyParser());
+
+// app 인스턴스에 라우터 적용
+app.use(router.routes()).use(router.allowedMethods());
+
+// PORT가 지정되어 있지 않다면 4000을 사용
+const port = PORT || 4000;
+app.listen(port, () => {
+  console.log("Listening to port %d", port);
+});
+```
+
+## 22.4 esm으로 ES 모듈 import/export 문법 사용하기
+
+- node.js에서 module 타입을 지원하지만
+  import/export 문법 사용시 nodemon에서 오류를 감지하여 추후에 적용하기로 하였다.
+
+### 22.4.1 기존 코드 ES Module 형태로 바꾸기
+
+## 22.5 데이터베이스의 스키마와 모델
+
+- mongoose에는 **스키마(schema)** 와 **모델(model)** 이라는 개념이 있다.
+- 스키마 : 컬렉션에 들어가는 문서 내부와 각 필드가 어떤 형식으로 되어 있는지 **정의하는 객체**
+- 모델 : 스키마를 사용하여 만드는 **인스턴스**, 데이터베이스에서 실제 작업을 처리할 수 있는 함수들을 지니고 있는 객체
+
+### 22.5.1 스키마 생성
+
+- 제목
+- 내용
+- 태그
+- 작성일
+
+- 각 정보에 대한 필드 이름과 데이터 타입을 설정하여 스키마를 만든다.
+- src/models/post.js
+
+```js
+import mongoose from "mongoose";
+
+const { Schema } = mongoose;
+
+const PostSchema = new Schema({
+  title: String,
+  body: String,
+  tags: [String], // 문자열로 이루어진 배열
+  publishedDate: {
+    type: Date,
+    default: Date.now, // 현재 날짜를 기본값으로 지정
+  },
+});
+```
+
+- Schema를 만들 때는 mongoose 모듈의 Schema를 사용하여 정의한다.
+- 그리고 각 필드 이름과 필드의 데이터 타입 정보가 들어 있는 객체를 작성한다.
+- Schema에서 기본적으로 지원하는 타입은 아래와 같다
+
+  - String : 문자열
+  - Number : 숫자
+  - Date : 날짜
+  - Buffer : 파일을 담을 수 있는 버퍼
+  - Boolean : true 또는 false 값
+  - Mixed(Schema, Types, Mixed) : 어떤 데이터도 넣을 수 있는 형식
+  - ObjectId(Schema, Types, ObjectId) : 객체 아이디 주로 다른 객체를 참조할 때 넣음
+  - Array : 배열 형태의 값으로 []로 감싸서 사용
+
+- 스키마 내부에 다른 스키마를 내장시킬 수도 있다. ( 교재 653p 참고)
+
+### 22.5.2 모델 생성
+
+- 모델을 만들 때는 mongoose.model 함수를 사용
+- src/models/post.js
+
+```js
+const mongoose = require("mongoose");
+
+const { Schema } = mongoose;
+
+const PostSchema = new Schema({
+  title: String,
+  body: String,
+  tags: [String], // 문자열로 이루어진 배열
+  publishedDate: {
+    type: Date,
+    default: Date.now, // 현재 날짜를 기본값으로 지정
+  },
+});
+
+const Post = mongoose.model("Post", PostSchema);
+
+module.exports = Post;
+```
+
+- model() 함수는 기본적으로 두 개의 파라미터가 필요하다.
+- 첫 번째 파라미터는 스키마 이름
+- 두 번째 파라미터는 스키마 객체
+- 데이터베이스는 스키마 이름을 정해 주면 그 이름의 복수 형태로 데이터베이스에 컬렉션 이름을 만든다.
+- 예를 들어 스키마 이름을 Post로 설정하면, 실제 데이터베이스에 만드는 컬렉션 이름은 posts이다.
+
+## 22.6 MongoDB Compass의 설치 및 이용
+
+- Window는 MongoDB를 설치 할 때 함께 Compass 설치 해준다.
+
+## 22.7 데이터 생성과 조회
+
+- MongoDB에 데이터를 등록하여 데이터를 보존해보자.
+
+### 22.7.1 데이터 생성
+
+- src/api/posts/index.js
+
+```js
+const Router = require("koa-router");
+const postsCtrl = require("./posts.ctrl");
+
+const posts = new Router();
+
+posts.get("/", postsCtrl.list);
+posts.post("/", postsCtrl.write);
+posts.get("/:id", postsCtrl.read);
+// put 메서드 사용하지 않을거라서 삭제
+posts.delete("/:id", postsCtrl.remove);
+posts.patch("/:id", postsCtrl.update);
+
+module.exports = posts;
+```
+
+- src/api/posts/posts.ctrl.js 의 write 함수
+
+```js
+const Post = require("../../models/post");
+
+let postId = 1; // id의 초기값
+
+// posts 배열 초기 데이터
+const posts = [
+  {
+    id: 1,
+    title: "제목",
+    body: "내용",
+  },
+];
+
+/* 포스트 작성
+POST /api/posts
+{title, body}
+*/
+exports.write = async (ctx) => {
+  const { title, body, tags } = ctx.request.body;
+  // 포스트의 인스턴스를 만들 때는 new 키워드를 사용
+  // 그리고 생성자 함수의 파라미터에 정보를 지닌 객체럴 넣음
+  const post = new Post({
+    title,
+    body,
+    tags,
+  });
+  try {
+    // save()함수를 실행시켜야 데이터베이스에 저장
+    // 이 함수의 반환 값은 Promise이므로 async/await 문법으로
+    // 데이터베이스 저장 요청을 완료할 때까지 await를 사용하여 대기
+    // await를 사용할 때는 try/catch 문으로 오류를 처리
+    await post.save();
+    ctx.body = post;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+
+/* 포스트 목록 조회
+GET /api/posts
+*/
+exports.list = (ctx) => {
+  ctx.body = posts;
+};
+
+/* 특정 포스트 조회
+GET /api/posts/:id
+*/
+exports.read = (ctx) => {
+  const { id } = ctx.params;
+  // 주어진 id 값으로 포스트를 찾는다.
+  // 파라미터로 받아 온 값은 문자열 형식이므로 파라미터를 숫자로 변환하거나
+  // 비교할 p.id 값을 문자열로 변경해야 한다.
+  const post = posts.find((p) => p.id.toString() === id);
+  // 포스트가 없으면 오류를 반환한다.
+  if (!post) {
+    ctx.status = 404;
+    ctx.body = {
+      message: "포스트가 존재하지 않습니다.",
+    };
+    return;
+  }
+  ctx.body = post;
+};
+
+/* 특정 포스트 제거
+DELETE /api/posts/:id
+*/
+exports.remove = (ctx) => {
+  const { id } = ctx.params;
+  // 해당 id를 가진 post가 몇 번째인지 확인한다.
+  const index = posts.findIndex((p) => p.id.toString() === id);
+  // 포스트가 없으면 오류를 반환한다.
+  if (index === -1) {
+    ctx.status = 404;
+    ctx.body = {
+      message: "포스트가 존재하지 않습니다.",
+    };
+    return;
+  }
+  // index번째 아이템을 제거한다.
+  posts.splice(index, 1);
+  ctx.status = 204; // No Content
+};
+
+/* 포스트 수정(특정 필드 변경)
+PATCH /api/posts/:id
+{title, body} */
+exports.update = (ctx) => {
+  // PATCH 메서드는 주어진 필드만 교체한다.
+  const { id } = ctx.params;
+  // 해당 id를 가진 post가 몇 번째인지 확인한다.
+  const index = posts.findIndex((p) => p.id.toString() === id);
+  // 포스트가 없으면 오류를 반환한다.
+  if (index === -1) {
+    ctx.status = 404;
+    ctx.body = {
+      message: "포스트가 존재하지 않습니다.",
+    };
+    return;
+  }
+  // 기존 값에 정보를 덮어 씌운다.
+  posts[index] = { ...posts[index], ...ctx.request.body };
+  ctx.body = posts[index];
+};
+```
+
+- MongoDB Compass에서 좌측 상단에 새로고침 버튼을 누르면 blog 데이터베이스가 나타남
+- blog 데이터베이스를 선택한 뒤 posts 컬렉션을 열어보자
+
+### 22.7.2 데이터조회
+
+- 모델 인스턴스의 find()함수 사용
+- src/api/posts/posts.ctrl.js 의 list 함수
+
+```js
+/* 포스트 목록 조회
+GET /api/posts
+*/
+exports.list = async (ctx) => {
+  try {
+    // find()함수를 호출한 후에는 exec()를 붙여 주어야 서버에 쿼리를 요청한다.
+    const posts = await Post.find().exec();
+    ctx.body = posts;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+- Postman으로 GET http://localhost:4000/api/posts 으로 확인 해보기
+
+### 22.7.3 특정 포스트 조회
+
+- 특정 id를 가진 데이터를 조회할 때는 findById() 함수 사용
+- src/api/posts/posts.ctrl.js 의 read 함수
+
+```js
+/* 특정 포스트 조회
+GET /api/posts/:id
+*/
+exports.read = async (ctx) => {
+  const { id } = ctx.params;
+  try {
+    // findById()함수를 호출한 후에 exec()를 붙여 주어야 서버에 쿼리를 요청함
+    const post = await Post.findById(id).exec();
+    if (!post) {
+      ctx.status = 404; // Not Found
+      return;
+    }
+    ctx.body = post;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+## 22.8 데이터 삭제와 수정
+
+### 22.8.1 데이터 삭제
+
+- 데이터를 삭제할 때는 여러 종류의 함수를 사용할 수 있다.
+
+  - delete() : 특정 조건을 만족하는 데이터를 모두 지운다.
+  - findByIdAndDelete() : id를 찾아서 지운다.
+  - findOneAndDelete() : 특정 조건을 만족하는 데이터 하나를 찾아서 제거한다.
+
+- 여기서는 findByIdAndDelete() 함수를 사용 해보자
+- src/api/posts/posts.ctrl.js
+
+```js
+/* 특정 포스트 제거
+DELETE /api/posts/:id
+*/
+exports.remove = async (ctx) => {
+  const { id } = ctx.params;
+  // 해당 id를 가진 post가 몇 번째인지 확인한다.
+  try {
+    await Post.findByIdAndDelete(id).exec();
+    ctx.status = 204; // No Content (성공하기는 했지만 응답할 데이터는 없음)
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+### 22.8.2 데이터 수정
+
+- findByIdAndUpdate() 함수 사용
+- 이 함수는 **세 가지 파라미터**를 넣어 주어야 한다.
+- 첫 번째 파라미터는 **id**, 두 번째 파라미터는 **업데이트 내용**, 세 번째 파라미터는 **업데이트 옵션**
+- src/api/posts/posts.ctrl.js
+
+```js
+/* 포스트 수정(특정 필드 변경)
+PATCH /api/posts/:id
+{
+  title: "수정",
+  body: "수정 내용",
+  tags: ["수정", "태그"]
+} 
+*/
+exports.update = async (ctx) => {
+  // PATCH 메서드는 주어진 필드만 교체한다.
+  const { id } = ctx.params;
+  try {
+    const post = await Post.findByIdAndUpdate(id, ctx.request.body, {
+      new: true, // 이 값을 설정하면 업데이트된 데이터를 반환한다.
+      // false 일 때는 업데이트되기 전의 데이터를 반환한다.
+    }).exec();
+    if (!post) {
+      ctx.status = 404;
+      return;
+    }
+    ctx.body = post;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+## 22.9 요청 검증
+
+### 22.9.1 ObjectId 검증
+
+- 앞서 read API를 실행할 때, id가 올바른 ObjectId 형식이 아니면 500 오류가 발생함
+- 500 오류는 보통 서버에서 처리하지 않아 내부적으로 문제가 생겼을 때 발생
+- 잘못된 id를 전달했다면 클라이언트가 요청을 잘못 보낸 것이니 400 Bad Request 오류를 띄워 주는것이 맞다.
+- 그러려면 id 값이 올바른 ObjectiId인지 확인해야 한다.
+- 검증 방법
+
+```js
+const mongoose = require("mongoose");
+
+const { ObjectId } = mongoose.Types;
+ObjectId.isValid(id);
+```
+
+- ObjectId를 검증해야 하는 API는 read, remove, update 세가지
+- 코드를 한번만 작성하여 여러 라우트에 쉽게 적용하는 방법이 있다.
+- 바로 미들웨어를 만드는 것이다.
+- src/api/posts/posts.ctrl.js
+
+```js
+const Post = require("../../models/post");
+const mongoose = require("mongoose");
+
+const { ObjectId } = mongoose.Types;
+
+exports.checkObjectId = (ctx, next) => {
+  const { id } = ctx.params;
+  if (!ObjectId.isValid(id)) {
+    ctx.status = 400; // Bad Request
+    return;
+  }
+  return next();
+};
+
+// 아래 코드 생략
+```
+
+- src/api/posts/index.js 에서 ObjectId 검증이 필요한 부분에 만든 미들웨어를 추가
+
+```js
+const Router = require("koa-router");
+const postsCtrl = require("./posts.ctrl");
+
+const posts = new Router();
+
+posts.get("/", postsCtrl.list);
+posts.post("/", postsCtrl.write);
+posts.get("/:id", postsCtrl.checkObjectId, postsCtrl.read);
+// put 메서드 사용하지 않을거라서 삭제
+posts.delete("/:id", postsCtrl.checkObjectId, postsCtrl.remove);
+posts.patch("/:id", postsCtrl.checkObjectId, postsCtrl.update);
+
+module.exports = posts;
+```
+
+### 22.9.2 Request Body 검증
+
+- write, update API에서 전달받은 요청 내용을 검증하는 방법
+- 지금은 따로 검증 처리를 하지 않았기 때문에 내용을 비운 상태에서 write API를 실행 해도 요청이 성공함
+- title, body, tags 값을 모두 전달받아야 하고 클라이언트가 값을 빼먹었을 때는 400 오류 발생시키도록 해보자.
+- 객체를 검증하기 위해 각 값을 if 문으로 비교하는 방법도 있으나 여기서는 joi 라이브러리 사용
+- `yarn add joi`
+
+- src/api/posts/posts.ctrl.js - write 함수
+
+```js
+const Post = require("../../models/post");
+const mongoose = require("mongoose");
+const Joi = require("joi");
+
+// ...
+
+/* 포스트 작성
+POST /api/posts
+{title, body}
+*/
+exports.write = async (ctx) => {
+  const schema = Joi.object().keys({
+    // 객체가 다음 필드를 가지고 있음을 검증
+    title: Joi.string().required(), // required()가 있으면 필수 항목
+    body: Joi.string().required(),
+    tags: Joi.array().items(Joi.string()).required(), // 문자열로 이루어진 배열
+  });
+
+  // 검증하고 나서 검증 실패인 경우 에러 처리
+  const result = schema.validate(ctx.request.body);
+  if (result.error) {
+    ctx.status = 400; // Bad Request
+    ctx.body = result.error;
+    return;
+  }
+
+  const { title, body, tags } = ctx.request.body;
+  // 포스트의 인스턴스를 만들 때는 new 키워드를 사용
+  // 그리고 생성자 함수의 파라미터에 정보를 지닌 객체럴 넣음
+  const post = new Post({
+    title,
+    body,
+    tags,
+  });
+  try {
+    // save()함수를 실행시켜야 데이터베이스에 저장
+    // 이 함수의 반환 값은 Promise이므로 async/await 문법으로
+    // 데이터베이스 저장 요청을 완료할 때까지 await를 사용하여 대기
+    // await를 사용할 때는 try/catch 문으로 오류를 처리
+    await post.save();
+    ctx.body = post;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+
+// ...
+```
+
+- update API 에는 required()가 없음
+- src/api/posts/posts.ctrl.js
+
+```js
+/* 포스트 수정(특정 필드 변경)
+PATCH /api/posts/:id
+{
+  title: "수정",
+  body: "수정 내용",
+  tags: ["수정", "태그"]
+} 
+*/
+exports.update = async (ctx) => {
+  // PATCH 메서드는 주어진 필드만 교체한다.
+  const { id } = ctx.params;
+
+  // write에서 사용한 schema와 비슷하지만 required()가 없습니다.
+  const schema = Joi.object().keys({
+    title: Joi.string(),
+    body: Joi.string(),
+    tags: Joi.array().items(Joi.string()),
+  });
+
+  // 검증하고 나서 검증 실패인 경우 에러 처리
+  const result = schema.validate(ctx.request.body);
+  if (result.error) {
+    ctx.status = 400; // Bad Request
+    ctx.body = result.error;
+    return;
+  }
+
+  try {
+    const post = await Post.findByIdAndUpdate(id, ctx.request.body, {
+      new: true, // 이 값을 설정하면 업데이트된 데이터를 반환한다.
+      // false 일 때는 업데이트되기 전의 데이터를 반환한다.
+    }).exec();
+    if (!post) {
+      ctx.status = 404;
+      return;
+    }
+    ctx.body = post;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
