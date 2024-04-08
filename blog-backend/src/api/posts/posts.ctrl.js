@@ -57,10 +57,32 @@ exports.write = async ctx => {
 GET /api/posts
 */
 exports.list = async ctx => {
+  // query는 문자열이기 때문에 숫자로 변환해 주어야 한다.
+  // 값이 주어지지 않았다면 1을 기본으로 사용한다.
+  const page = parseInt(ctx.query.page || "1", 10);
+
+  if (page < 1) {
+    ctx.status = 400;
+    return;
+  }
+
   try {
     // find()함수를 호출한 후에는 exec()를 붙여 주어야 서버에 쿼리를 요청한다.
-    const posts = await Post.find().exec();
-    ctx.body = posts;
+    const posts = await Post.find()
+      .sort({ _id: -1 })
+      .limit(10)
+      .skip((page - 1) * 10)
+      .lean()
+      .exec();
+
+    const postCount = await Post.countDocuments().exec();
+
+    ctx.set("Last-Page", Math.ceil(postCount / 10));
+
+    ctx.body = posts.map(post => ({
+      ...post,
+      body: post.body.length < 200 ? post.body : `${post.body.slice(0, 200)}...`,
+    }));
   } catch (error) {
     ctx.throw(500, error);
   }

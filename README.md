@@ -1452,3 +1452,314 @@ exports.update = async (ctx) => {
   }
 };
 ```
+
+## 22.10 페이지네이션 구현
+
+- 블로그에서 포스트 목록을 볼 때 한 페이지에 보이는 포스트의 개수는 10~20개 정도
+- 포스트 목록을 볼 때 포스트 전체 내용을 보여 줄 필요는 없고, 처음 200자(글자) 정도만 보여주자
+
+### 22.10.1 가짜 데이터 생성하기
+
+- 페이지네이션 기능을 구현하기 위해 가짜 데이터 생성하는 스크립트 작성
+- src/createFakeData.js
+
+```js
+const Post = require("./models/post");
+
+exports.createFakeData = async () => {
+  // 0, 1, ... 39로 이루어진 배열을 생성한 후 포스트 데이터로 변환
+  const posts = [...Array(40).keys()].map((i) => ({
+    title: `포스트 #${i}`,
+    // http://www.lipsum.com/ 에서 복사한 200자 이상의 텍스트
+    body: `Lorem ipsum dolor sit amet, consectetur adipiscing elit. Praesent nec felis dapibus, 
+    aliquet libero a, tincidunt nisl. Nunc maximus, justo at auctor lacinia, ipsum orci aliquam massa, 
+    sit amet auctor justo velit eu mauris. Ut vitae efficitur mauris, sit amet sodales magna. Sed vehicula, 
+    diam in porttitor placerat, nisi nisi consequat nisl, non auctor nunc lacus a dui. Vivamus consequat, 
+    nulla non sodales molestie, ipsum eros vulputate mi, a consequat mi lorem a nunc. Pellentesque habitant 
+    morbi tristique senectus et netus et malesuada fames ac turpis egestas.`,
+    tags: ["가짜", "데이터"],
+  }));
+
+  try {
+    const docs = await Post.insertMany(posts);
+    console.log(docs);
+  } catch (error) {
+    console.error(error);
+  }
+};
+```
+
+- src/index.js
+
+```js
+// ...
+const { createFakeData } = require("./createFakeData");
+// ...
+mongoose
+  .connect(MONGO_URI)
+  .then(() => {
+    console.log("Connected to MongoDB");
+    createFakeData();
+  })
+  .catch((error) => {
+    console.error(error);
+  });
+
+// ...
+```
+
+### 22.10.2 포스트를 역순으로 불러오기
+
+- 블로그에 방문한 사람에게 가장 최근 작성된 포스트를 먼저 보여주자
+- list API에서 exec()를 하기전에 sort() 구문을 넣으면 된다.
+- sort() 함수의 파라미터는 {key: 1} 형식으로 넣는다.
+- key는 정렬(sorting)할 필드를 설정하는 부분이며,
+- 오른쪽 값을 1로 설정하면 오름차순, -1로 설정하면 내림차순으로 정렬
+- 내림차순으로 정렬해야 하므로 {\_id: -1}로 설정
+
+- src/api/posts/posts.ctrl.js - list 함수
+- Postman에서 확인
+
+```js
+/* 포스트 목록 조회
+GET /api/posts
+*/
+exports.list = async (ctx) => {
+  try {
+    // find()함수를 호출한 후에는 exec()를 붙여 주어야 서버에 쿼리를 요청한다.
+    const posts = await Post.find().sort({ _id: -1 }).exec();
+    ctx.body = posts;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+### 22.10.3 보이는 개수 제한
+
+- 개수를 제한할 때는 limit() 함수를 사용한다.
+- 파라미터에는 제한할 숫자를 넣으면 된다.
+
+- src/api/posts/posts.ctrl.js - list 함수
+
+```js
+/* 포스트 목록 조회
+GET /api/posts
+*/
+exports.list = async (ctx) => {
+  try {
+    // find()함수를 호출한 후에는 exec()를 붙여 주어야 서버에 쿼리를 요청한다.
+    const posts = await Post.find().sort({ _id: -1 }).limit(10).exec();
+    ctx.body = posts;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+### 22.10.4 페이지 기능 구현
+
+- 페이지 기능을 구현하려면 limit() 함수와 추가로 skip() 함수를 사용해야한다.
+- skip() 함수에 파라미터로 10을 넣어 주면, 처음 10개를 제외하고 그다음 데이터를 불러온다.
+- 20을 넣어주면 처음 20개를 제외하고 그다음 데이터
+
+- skip() 함수에 파라미터에는 (page - 1) \* 10을 넣어주면
+- 1페이지에는 처음 10개를 불러오고, 2페이지에는 그다음 10개를 불러온다.
+- page 값은 query에서 받아 오도록 설정한다.
+- 이 값이 없으면 page 값을 1로 간주하도록 코드를 작성한다.
+
+- src/api/posts/posts.ctrl.js - list 함수
+
+```js
+/* 포스트 목록 조회
+GET /api/posts
+*/
+exports.list = async (ctx) => {
+  // query는 문자열이기 때문에 숫자로 변환해 주어야 한다.
+  // 값이 주어지지 않았다면 1을 기본으로 사용한다.
+  const page = parseInt(ctx.query.page || "1", 10);
+
+  if (page < 1) {
+    ctx.status = 400;
+    return;
+  }
+
+  try {
+    // find()함수를 호출한 후에는 exec()를 붙여 주어야 서버에 쿼리를 요청한다.
+    const posts = await Post.find()
+      .sort({ _id: -1 })
+      .limit(10)
+      .skip((page - 1) * 10)
+      .exec();
+    ctx.body = posts;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+- http://localhost:4000/api/posts?page=2 형식으로 페이지를 지정하여 조회할 수 있다.
+
+### 22.10.5 마지막 페이지 번호 알려주기
+
+- 응답 내용의 형식을 바꾸어 새로운 필드를 설정하는 방법
+- Response 헤더 중 Link를 설정하는 방법
+- 커스텀 헤더를 설정하는 방법 으로 이 정보를 알려 줄수도 있다.
+
+- 여기서는 커스텀 헤더를 설정하는 방법을 사용해보자
+
+- src/api/posts/posts.ctrl.js - list 함수
+
+```js
+/* 포스트 목록 조회
+GET /api/posts
+*/
+exports.list = async (ctx) => {
+  // query는 문자열이기 때문에 숫자로 변환해 주어야 한다.
+  // 값이 주어지지 않았다면 1을 기본으로 사용한다.
+  const page = parseInt(ctx.query.page || "1", 10);
+
+  if (page < 1) {
+    ctx.status = 400;
+    return;
+  }
+
+  try {
+    // find()함수를 호출한 후에는 exec()를 붙여 주어야 서버에 쿼리를 요청한다.
+    const posts = await Post.find()
+      .sort({ _id: -1 })
+      .limit(10)
+      .skip((page - 1) * 10)
+      .exec();
+    const postCount = await Post.countDocuments().exec();
+    ctx.set("Last-Page", Math.ceil(postCount / 10));
+    ctx.body = posts;
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+- Postman에서 아래쪽 Headers 확인
+
+### 22.10.6 내용 길이 제한
+
+- body의 길이가 200자 이상이면 뒤에 '...'을 붙이고 문자열을 자르는 기능을 구현해보자
+- find()를 통해 조회한 데이터는 mongoose 문서 인스턴스의 형태이므로 데이터를 바로 변형할 수 없다.
+- 그 대신 toJSON() 함수를 실행하여 JSON 형태로 변환한 뒤 필요한 변형을 일으켜 주어야 한다.
+
+- src/api/posts/posts.ctrl.js - list 함수
+
+```js
+/* 포스트 목록 조회
+GET /api/posts
+*/
+exports.list = async (ctx) => {
+  // query는 문자열이기 때문에 숫자로 변환해 주어야 한다.
+  // 값이 주어지지 않았다면 1을 기본으로 사용한다.
+  const page = parseInt(ctx.query.page || "1", 10);
+
+  if (page < 1) {
+    ctx.status = 400;
+    return;
+  }
+
+  try {
+    // find()함수를 호출한 후에는 exec()를 붙여 주어야 서버에 쿼리를 요청한다.
+    const posts = await Post.find()
+      .sort({ _id: -1 })
+      .limit(10)
+      .skip((page - 1) * 10)
+      .exec();
+
+    const postCount = await Post.countDocuments().exec();
+
+    ctx.set("Last-Page", Math.ceil(postCount / 10));
+
+    ctx.body = posts
+      .map((post) => post.toJSON())
+      .map((post) => ({
+        ...post,
+        body:
+          post.body.length < 200 ? post.body : `${post.body.slice(0, 200)}...`,
+      }));
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+- lean() 함수를 사용하는 방법, 데이터를 처음부터 JSON 형태로 조회할 수 있다.
+
+```js
+/* 포스트 목록 조회
+GET /api/posts
+*/
+exports.list = async (ctx) => {
+  // query는 문자열이기 때문에 숫자로 변환해 주어야 한다.
+  // 값이 주어지지 않았다면 1을 기본으로 사용한다.
+  const page = parseInt(ctx.query.page || "1", 10);
+
+  if (page < 1) {
+    ctx.status = 400;
+    return;
+  }
+
+  try {
+    // find()함수를 호출한 후에는 exec()를 붙여 주어야 서버에 쿼리를 요청한다.
+    const posts = await Post.find()
+      .sort({ _id: -1 })
+      .limit(10)
+      .skip((page - 1) * 10)
+      .lean()
+      .exec();
+
+    const postCount = await Post.countDocuments().exec();
+
+    ctx.set("Last-Page", Math.ceil(postCount / 10));
+
+    ctx.body = posts.map((post) => ({
+      ...post,
+      body:
+        post.body.length < 200 ? post.body : `${post.body.slice(0, 200)}...`,
+    }));
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+```
+
+- 추가: 서버를 재실행 할 때마다 새로운 40개의 더미 데이터가 생성되어 부족한 만큼만 새로 생성하고 40개일 때는 생성하지 않는 코드
+- src/createFakeDaga.js
+
+```js
+const Post = require("./models/post");
+
+exports.createFakeData = async () => {
+  // Post 모델을 사용하여 데이터베이스에서 포스트의 수를 확인
+  const postCount = await Post.countDocuments();
+
+  // 포스트 데이터가 40개 미만일 경우만 더미 데이터 생성
+  if (postCount < 40) {
+    const posts = [...Array(40 - postCount).keys()].map((i) => ({
+      title: `포스트 #${postCount + i}`,
+      body: `Lorem ipsum dolor sit amet, consectetur adipiscing elit. Praesent nec felis dapibus, 
+      aliquet libero a, tincidunt nisl. Nunc maximus, justo at auctor lacinia, ipsum orci aliquam massa, 
+      sit amet auctor justo velit eu mauris. Ut vitae efficitur mauris, sit amet sodales magna. Sed vehicula, 
+      diam in porttitor placerat, nisi nisi consequat nisl, non auctor nunc lacus a dui. Vivamus consequat, 
+      nulla non sodales molestie, ipsum eros vulputate mi, a consequat mi lorem a nunc. Pellentesque habitant 
+      morbi tristique senectus et netus et malesuada fames ac turpis egestas.`,
+      tags: ["가짜", "데이터"],
+    }));
+
+    try {
+      const docs = await Post.insertMany(posts);
+      console.log(`${docs.length}개의 포스트를 생성했습니다.`);
+    } catch (error) {
+      console.error(error);
+    }
+  } else {
+    console.log("더미 데이터 생성을 건너뜁니다.");
+  }
+};
+```
