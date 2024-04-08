@@ -4,10 +4,32 @@ const Joi = require("joi");
 
 const { ObjectId } = mongoose.Types;
 
-exports.checkObjectId = (ctx, next) => {
+exports.getPostById = async (ctx, next) => {
   const { id } = ctx.params;
   if (!ObjectId.isValid(id)) {
     ctx.status = 400; // Bad Request
+    return;
+  }
+  try {
+    const post = await Post.findById(id);
+    // 포스트가 존재하지 않을 때
+    if (!post) {
+      ctx.status = 404; // Not Found
+      return;
+    }
+    ctx.state.post = post;
+    return next();
+  } catch (error) {
+    ctx.throw(500, error);
+  }
+};
+
+exports.checkOwnPost = (ctx, next) => {
+  const { user, post } = ctx.state;
+  // MongoDB에서 조회한 데이터의 id 값을 문자열과 비교할 때는
+  // 반드시 .toString()을 해주어야 한다.
+  if (post.user._id.toString() !== user._id) {
+    ctx.status = 403;
     return;
   }
   return next();
@@ -40,6 +62,7 @@ exports.write = async ctx => {
     title,
     body,
     tags,
+    user: ctx.state.user,
   });
   try {
     // save()함수를 실행시켜야 데이터베이스에 저장
@@ -54,7 +77,7 @@ exports.write = async ctx => {
 };
 
 /* 포스트 목록 조회
-GET /api/posts
+GET /api/posts?username=&tag=&page=
 */
 exports.list = async ctx => {
   // query는 문자열이기 때문에 숫자로 변환해 주어야 한다.
@@ -66,16 +89,23 @@ exports.list = async ctx => {
     return;
   }
 
+  const { tag, username } = ctx.query;
+  // tag, username 값이 유효하면 객체 안에 넣고, 그렇지 않으면 넣지 않음
+  const query = {
+    ...(username ? { "user.username": username } : {}),
+    ...(tag ? { tags: tag } : {}),
+  };
+
   try {
     // find()함수를 호출한 후에는 exec()를 붙여 주어야 서버에 쿼리를 요청한다.
-    const posts = await Post.find()
+    const posts = await Post.find(query)
       .sort({ _id: -1 })
       .limit(10)
       .skip((page - 1) * 10)
       .lean()
       .exec();
 
-    const postCount = await Post.countDocuments().exec();
+    const postCount = await Post.countDocuments(query).exec();
 
     ctx.set("Last-Page", Math.ceil(postCount / 10));
 
@@ -91,19 +121,8 @@ exports.list = async ctx => {
 /* 특정 포스트 조회
 GET /api/posts/:id
 */
-exports.read = async ctx => {
-  const { id } = ctx.params;
-  try {
-    // findById()함수를 호출한 후에 exec()를 붙여 주어야 서버에 쿼리를 요청함
-    const post = await Post.findById(id).exec();
-    if (!post) {
-      ctx.status = 404; // Not Found
-      return;
-    }
-    ctx.body = post;
-  } catch (error) {
-    ctx.throw(500, error);
-  }
+exports.read = ctx => {
+  ctx.body = ctx.state.post;
 };
 
 /* 특정 포스트 제거

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+
 const { Schema } = mongoose;
 
 const PostSchema = new Schema({
@@ -8,6 +9,10 @@ const PostSchema = new Schema({
   publishedDate: {
     type: Date,
     default: Date.now, // 현재 날짜를 기본값으로 지정
+  },
+  user: {
+    _id: mongoose.Types.ObjectId,
+    username: String,
   },
 });
 
