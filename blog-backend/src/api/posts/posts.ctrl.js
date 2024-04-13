@@ -1,8 +1,19 @@
 const Post = require("../../models/post");
 const mongoose = require("mongoose");
 const Joi = require("joi");
+const sanitizeHtml = require("sanitize-html");
 
 const { ObjectId } = mongoose.Types;
+
+const sanitizeOption = {
+  allowedTags: ["h1", "h2", "b", "i", "u", "s", "p", "ul", "ol", "li", "blockquote", "a", "img"],
+  allowedAttributes: {
+    a: ["href", "name", "target"],
+    img: ["src"],
+    li: ["class"],
+  },
+  allowedSchemes: ["data", "http"],
+};
 
 exports.getPostById = async (ctx, next) => {
   const { id } = ctx.params;
@@ -60,7 +71,7 @@ exports.write = async ctx => {
   // 그리고 생성자 함수의 파라미터에 정보를 지닌 객체럴 넣음
   const post = new Post({
     title,
-    body,
+    body: sanitizeHtml(body, sanitizeOption),
     tags,
     user: ctx.state.user,
   });
@@ -74,6 +85,13 @@ exports.write = async ctx => {
   } catch (error) {
     ctx.throw(500, error);
   }
+};
+
+const removeHtmlAndShorten = body => {
+  const filtered = sanitizeHtml(body, {
+    allowedTags: [],
+  });
+  return filtered.length < 200 ? filtered : `${filtered.slice(0, 200)}...`;
 };
 
 /* 포스트 목록 조회
@@ -111,7 +129,7 @@ exports.list = async ctx => {
 
     ctx.body = posts.map(post => ({
       ...post,
-      body: post.body.length < 200 ? post.body : `${post.body.slice(0, 200)}...`,
+      body: removeHtmlAndShorten(post.body),
     }));
   } catch (error) {
     ctx.throw(500, error);
@@ -166,8 +184,14 @@ exports.update = async ctx => {
     return;
   }
 
+  const nextData = { ...ctx.request.body }; // 객체를 복사하고
+  // body 값이 주어졌으면 HTML 필터링
+  if (nextData.body) {
+    nextData.body = sanitizeHtml(nextData.body, sanitizeOption);
+  }
+
   try {
-    const post = await Post.findByIdAndUpdate(id, ctx.request.body, {
+    const post = await Post.findByIdAndUpdate(id, nextData, {
       new: true, // 이 값을 설정하면 업데이트된 데이터를 반환한다.
       // false 일 때는 업데이트되기 전의 데이터를 반환한다.
     }).exec();
